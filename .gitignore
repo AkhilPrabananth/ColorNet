@@ -165,3 +165,7 @@ temp/
 .ipynb_checkpoints/
 model_weights/
 Dynamic_UNET_Testing/
+latest_pretrained_weights copy.pt
+Notebooks/latest_pretrained_weights.pt
+Notebooks/latest_pretrained_weights.pt
+latest_pretrained_weights.pt
