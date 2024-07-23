@@ -2,6 +2,7 @@ import os
 from PIL import Image
 import numpy as np
 import cv2
+import argparse
 
 def convert_to_grayscale_l_channel(input_folder, output_folder):
     if not os.path.exists(output_folder):
@@ -27,7 +28,11 @@ def convert_to_grayscale_l_channel(input_folder, output_folder):
 
             print(f'Converted {filename} to grayscale (L channel) and saved to {output_path}')
 
-input_folder = '../../ColorNet_Backup/Dataset/ds/blackclover/colored'
-output_folder = '../../ColorNet_Backup/Dataset/ds/blackclover/L'
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Convert images to grayscale L channel in LAB color space.')
+    parser.add_argument('input_folder', type=str, help='Path to the input folder containing images.')
+    parser.add_argument('output_folder', type=str, help='Path to the output folder where grayscale images will be saved.')
 
-convert_to_grayscale_l_channel(input_folder, output_folder)
+    args = parser.parse_args()
+
+    convert_to_grayscale_l_channel(args.input_folder, args.output_folder)
