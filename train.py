@@ -280,13 +280,15 @@ def main(args):
             
             preds = self.net_G(torch.unsqueeze(self.L[:, 0, ...],dim=1))
             
+            stm=preds['stm']
+            ltm=preds['ltm']
             
             ab_data.append(preds['stm'])
 
             # compute the remaining hr data
             for i in range(1, self.t):
-                ab_curr = self.net_G(self.L[:, i, ...], ab_data[i-1])
-                ab_data.append(ab_curr['stm'])
+                stm,ltm = self.net_G(self.L[:, i, ...], ab_data[i-1],stm,ltm)
+                ab_data.append(stm)
 
             self.ab_data = torch.stack(ab_data, dim=1)
 
