@@ -232,7 +232,7 @@ def main(args):
                 print(self.unet_part2.load_state_dict(torch.load(pretrained_weights)))
             
         
-        def forward(self, L, prev_ab = None):
+        def forward(self, L, prev_ab = None, stm=None, ltm=None):
             if(prev_ab is None):
                 #print(torch.squeeze(L,dim=1).shape)
                 L = torch.squeeze(L,dim=1)
@@ -242,7 +242,11 @@ def main(args):
             part1 = self.unet_part1(x)
             #print(part1.shape)
             pred_ab = self.unet_part2(part1)
-            stm, ltm = self.lstm(pred_ab)
+            if (stm is None):
+                stm, ltm = self.lstm(pred_ab)
+            else:
+                #print(pred_ab.shape,stm.shape,ltm.shape)
+                stm, ltm = self.lstm(pred_ab,stm,ltm)
             return {'pred_ab': pred_ab, 'stm': stm, 'ltm': ltm}
         
     class ColorNetGAN(nn.Module):
@@ -277,20 +281,33 @@ def main(args):
         def forward(self):
             n, self.t, c, lr_h, lr_w = self.L.size()
             ab_data = []
+            stm_data = []
+            ltm_data = []
             
             preds = self.net_G(torch.unsqueeze(self.L[:, 0, ...],dim=1))
             
             stm=preds['stm']
             ltm=preds['ltm']
+            last_ab=preds['pred_ab']
             
-            ab_data.append(preds['stm'])
+            stm_data.append(stm)
+            ltm_data.append(ltm)
+            ab_data.append(last_ab)
 
             # compute the remaining hr data
             for i in range(1, self.t):
-                stm,ltm = self.net_G(self.L[:, i, ...], ab_data[i-1],stm,ltm)
-                ab_data.append(stm)
+                preds = self.net_G(self.L[:, i, ...], stm_data[i-1],stm_data[i-1],ltm_data[i-1])
+                
+                stm=preds['stm']
+                ltm=preds['ltm']
+                last_ab=preds['pred_ab']
+                
+                stm_data.append(stm)
+                ltm_data.append(ltm)
+                ab_data.append(last_ab)
 
             self.ab_data = torch.stack(ab_data, dim=1)
+    
 
         def backward_D(self):
             self.loss_D_fake = 0
@@ -305,8 +322,8 @@ def main(args):
                 real_preds = self.net_D(real_image)
                 self.loss_D_real += self.GANcriterion(real_preds, True)
 
-            #self.loss_D_fake /= self.t                                              # I don't think we should divide by t here
-            #self.loss_D_real /= self.t                                              # I don't think we should divide by t here
+            self.loss_D_fake /= self.t                                              # I don't think we should divide by t here
+            self.loss_D_real /= self.t                                              # I don't think we should divide by t here
             self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
             self.loss_D.backward()
 
@@ -320,8 +337,8 @@ def main(args):
                 self.loss_G_GAN += self.GANcriterion(fake_preds, True)
                 self.loss_G_L1 += self.L1criterion(self.ab_data[:, i, ...], self.ab[:, i, ...]) * self.lambda_L1
 
-            #self.loss_G_GAN /= self.t                                                               # I don't think we should divide by t here
-            #self.loss_G_L1 /= self.t                                                                # I don't think we should divide by t here
+            self.loss_G_GAN /= self.t                                                               # I don't think we should divide by t here
+            self.loss_G_L1 /= self.t                                                                # I don't think we should divide by t here
             self.loss_G = self.loss_G_GAN + self.loss_G_L1
             self.loss_G.backward()
 
@@ -468,7 +485,7 @@ def main(args):
                         'loss_G_L1': loss_meter_dict['loss_G_L1'].avg,
                         'loss_G': loss_meter_dict['loss_G'].avg
                     })
-                    torch.save(model.state_dict(),'latest_weights.pt')
+                    torch.save(model.state_dict(),'./weights/latest_weights.pt')
 
             print(f"Epoch {e + 1}/{epochs}")
             log_results(loss_meter_dict)
@@ -487,22 +504,39 @@ def main(args):
                 
                 n, t, c, lr_h, lr_w = L.size()
                 ab_data = []
+                stm_data = []
+                ltm_data = []
                 
-                preds = net_G(torch.unsqueeze(L[:, 0, ...], dim=1))
-                ab_data.append(preds['stm'])
+                preds = net_G(torch.unsqueeze(L[:, 0, ...],dim=1))
+                
+                stm=preds['stm']
+                ltm=preds['ltm']
+                last_ab=preds['pred_ab']
+                
+                stm_data.append(stm)
+                ltm_data.append(ltm)
+                ab_data.append(last_ab)
 
                 # compute the remaining hr data
-                for j in range(1, t):
-                    ab_curr = net_G(L[:, j, ...], ab_data[j-1])
-                    ab_data.append(ab_curr['stm'])
+                for i in range(1, t):
+                    preds = net_G(L[:, i, ...], stm_data[i-1],stm_data[i-1],ltm_data[i-1])
+                    
+                    stm=preds['stm']
+                    ltm=preds['ltm']
+                    last_ab=preds['pred_ab']
+                    
+                    stm_data.append(stm)
+                    ltm_data.append(ltm)
+                    ab_data.append(last_ab)
 
                 ab_data = torch.stack(ab_data, dim=1)
+        
 
                 loss = 0
                 for j in range(t):
                     loss += criterion(ab_data[:, j, ...], ab[:, j, ...])
 
-                #loss /= t
+                loss /= t
                     
                 opt.zero_grad()
                 loss.backward()
@@ -512,21 +546,23 @@ def main(args):
                 
                 if i % display_every == 0:
                     progress_bar.set_postfix({'L1 Loss': loss_meter.avg})
-                    torch.save(net_G.state_dict(),'latest_pretrained_weights.pt')
+                    torch.save(net_G.state_dict(),'./weights/latest_pretrained_weights.pt')
 
             print(f"Epoch {e + 1}/{epochs}")
             print(f"L1 Loss: {loss_meter.avg:.5f}")
             
-            
-    train_model(model, train_loader, args.epochs)
+    criterion=nn.L1Loss()
+    pretrain_generator(net_G, train_loader, torch.optim.Adam(net_G.parameters(), lr=1e-4), criterion,args.pretrain_epochs)
+    train_model(model, train_loader, args.train_epochs)
     
 if __name__=="__main__":
     parser=argparse.ArgumentParser()
     parser.add_argument('--data', type=str, default='data')
-    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--size', type=int, default=256)
-    parser.add_argument('--tempo_length', type=int, default=1)
-    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--tempo_length', type=int, default=5)
+    parser.add_argument('--pretrain_epochs', type=int, default=5)
+    parser.add_argument('--train_epochs', type=int, default=10)
     
     args=parser.parse_args()
     
