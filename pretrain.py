@@ -11,7 +11,6 @@ from skimage.color import rgb2lab, lab2rgb
 import torch
 from torch import nn, optim
 from torchvision import transforms
-from torchvision.utils import make_grid
 from torch.utils.data import Dataset, DataLoader
 import argparse
 from fastai.vision.learner import create_body
@@ -24,11 +23,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from fastai.data.external import untar_data, URLs
 
 def main(args):
-    coco_path = untar_data(URLs.COCO_SAMPLE)
-    coco_path = str(coco_path) + "/train_sample"
     path=args.data
 
-    if(path==coco_path):
+    if(path=="coco"):
+        coco_path = untar_data(URLs.COCO_SAMPLE)
+        coco_path = str(coco_path) + "/train_sample"
         total=10_000
         val=8000
     else:
@@ -154,7 +153,7 @@ def main(args):
         
     class MainModel(nn.Module):
         def __init__(self, net_G=None, lr_G=2e-4, lr_D=2e-4,
-                    beta1=0.5, beta2=0.999, lambda_L1=100.):
+                    beta1=0.5, beta2=0.999, lambda_L1=100.,unet=True):
             super().__init__()
 
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -165,6 +164,7 @@ def main(args):
             self.net_D = init_model(PatchDiscriminator(input_c=3, n_down=3, num_filters=64), self.device)
             self.GANcriterion = GANLoss(gan_mode='vanilla').to(self.device)
             self.L1criterion = nn.L1Loss()
+            self.unet=unet
             self.opt_G = optim.Adam(self.net_G.parameters(), lr=lr_G, betas=(beta1, beta2))
             self.opt_D = optim.Adam(self.net_D.parameters(), lr=lr_D, betas=(beta1, beta2))
 
@@ -177,8 +177,11 @@ def main(args):
             self.ab = data['ab'].to(self.device)
 
         def forward(self):
-            self.fake_color = self.net_G(self.L)['pred_ab']
-
+            if(not self.unet):
+                self.fake_color = self.net_G(self.L)['pred_ab']
+            else:
+                self.fake_color = self.net_G(self.L)
+                
         def backward_D(self):
             fake_image = torch.cat([self.L, self.fake_color], dim=1)
             fake_preds = self.net_D(fake_image.detach())
@@ -265,25 +268,38 @@ def main(args):
             return self.lstm_unit(input,long_memory,short_memory)
         
     class ColorNet(nn.Module):
-        def __init__(self,pretrained_weights=None):
+        def __init__(self,pretrained_weights=None,freeze=False,custom_decoder=False):
             super().__init__()
             self.unet_part1 = nn.Conv2d(in_channels=3, out_channels=1, kernel_size=9, stride=1, padding='same').to(device)
             self.unet_part2 = build_res_unet(n_input=1, n_output=2, size=SIZE)
             self.lstm = NDIM_LSTM((2,SIZE,SIZE)).to('cuda' if torch.cuda.is_available() else 'cpu')
             if(pretrained_weights is not None):
                 print(self.unet_part2.load_state_dict(torch.load(pretrained_weights)))
-            
+                if(freeze):
+                    for param in self.parameters():
+                        param.requires_grad = False
+                    for param in self.unet_part1.parameters():
+                        param.requires_grad = True
+                    for param in self.lstm.parameters():
+                        param.requires_grad = True
+                    if(custom_decoder):
+                        for param in self.unet_part2.layers[3:len(self.unet_part2.layers)].parameters():
+                            param.requires_grad=True
         
-        def forward(self, L, prev_ab = None):
+            
+        def forward(self, L, prev_ab = None, stm=None, ltm=None):
             if(prev_ab is None):
-                n,c,h,w=L.shape
-                prev_ab=torch.zeros(n,2,h,w).to(device)
+                n,c,h,w = L.shape
+                prev_ab = torch.zeros(n, 2, h, w, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32)
             x = torch.concat([L, prev_ab], dim=1)
             part1 = self.unet_part1(x)
             pred_ab = self.unet_part2(part1)
-            stm, ltm = self.lstm(pred_ab)
+            if (stm is None):
+                stm, ltm = self.lstm(pred_ab)
+            else:
+                stm, ltm = self.lstm(pred_ab,stm,ltm)
             return {'pred_ab': pred_ab, 'stm': stm, 'ltm': ltm}
-            
+             
             
     class AverageMeter:
         def __init__(self):
@@ -366,7 +382,7 @@ def main(args):
         for e in range(epochs):
             loss_meter_dict = create_loss_meters() # function returing a dictionary of objects to
             i = 0                                  # log the losses of the complete network
-            for data in tqdm(train_dl):
+            for data in train_dl:
                 model.setup_input(data)
                 model.optimize()
                 update_losses(model, loss_meter_dict, count=data['L'].size(0)) # function updating the log objects
@@ -383,13 +399,15 @@ def main(args):
         net_G = DynamicUnet(body, n_output, (size, size)).to(device)
         return net_G
     
-    def pretrain_generator(net_G, train_dl, opt, criterion, epochs):
+    def pretrain_generator(net_G, train_dl, opt, criterion, epochs, unet=True):
         for e in range(epochs):
             loss_meter = AverageMeter()
-            for data in tqdm(train_dl):
+            for data in train_dl:
                 L, ab = data['L'].to(device), data['ab'].to(device)
-                preds = net_G(L)['pred_ab']
-                #print(preds.shape,ab.shape)
+                if not unet:
+                    preds = net_G(L)['pred_ab']
+                else:
+                    preds = net_G(L)
                 loss = criterion(preds, ab)
                 opt.zero_grad()
                 loss.backward()
@@ -404,7 +422,8 @@ def main(args):
     train_dl = make_dataloaders(paths=train_paths, split='train')
     val_dl = make_dataloaders(paths=val_paths, split='val')
     
-    print("\nTraining the U-Net part\n")
+    print("\nPretraining the U-Net part for Coloring\n")
+    
     
     net_G = build_res_unet(n_input=1, n_output=2, size=256)
     opt = optim.Adam(net_G.parameters(), lr=1e-4)
@@ -417,7 +436,7 @@ def main(args):
     print("\nTraining ColorNet\n")
 
     net_G = ColorNet('./weights/unet.pt',True,True)
-    model = MainModel(net_G=net_G)
+    model = MainModel(net_G=net_G,unet=False)
     train_model(model, train_dl, 40)
 
 if __name__=="__main__":
@@ -426,5 +445,6 @@ if __name__=="__main__":
     parser.add_argument('batch_size',type=int,default=16,help='Batch size for training')
     
     args = parser.parse_args()
+    main(args)
 
     
