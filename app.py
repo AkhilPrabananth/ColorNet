@@ -279,6 +279,8 @@ def translate_image(image, weight_name, save):
         model.load_state_dict(torch.load('./weights/full_model_manga_finetuned_blackclover.pt'))
     elif(weight_name=='mah'):
         model.load_state_dict(torch.load('./weights/full_model_manga_finetuned_mah.pt'))
+    elif(weight_name=='latest'):
+        model.load_state_dict(torch.load('./weights/latest_weights.pt'))
 
         
     model.eval()
@@ -328,7 +330,7 @@ interface = gr.Interface(
     fn=translate_image,
     inputs=[
         gr.Image(type="pil"),
-        gr.Radio(choices=["op_init", "bc", "mah", "last"], label="Select Weights", value="op_init"),
+        gr.Radio(choices=["op_init", "bc", "mah", "last","latest"], label="Select Weights", value="op_init"),
         gr.Radio(choices=["True", "False"], label="Save Output", value="False")
     ],
     outputs=gr.Image(type="pil", label="Translated Image", elem_classes="translated-image"),
